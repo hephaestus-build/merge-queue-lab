@@ -1,0 +1,111 @@
+name: CI
+on:
+  pull_request:
+  merge_group:
+permissions: {}
+
+jobs:
+  fast-fail:
+    name: fast-fail
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Fail after 30 s when the entry is marked to fail
+        env:
+          EVENT: ${{ github.event_name }}
+          LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          HEAD_REF: ${{ github.event.merge_group.head_ref }}
+        run: |
+          echo "fast-fail started $(date -u +%FT%T.%3NZ) event=$EVENT"
+          sleep 30
+          fail=false
+          if [ "$EVENT" = pull_request ]; then
+            # Pull request: a label makes the leg fail.
+            echo "$LABELS" | jq -e 'index("fail-pr")' >/dev/null && fail=true
+          else
+            # Merge group: FAIL holds a PR number. Only the group whose last entry is that PR fails,
+            # so a healthy entry queued behind the failing one does not fail for the same reason.
+            tail_pr=$(echo "$HEAD_REF" | sed -E 's#.*/pr-([0-9]+)-.*#\1#')
+            echo "group tail PR: $tail_pr; FAIL file: $(cat FAIL 2>/dev/null || echo none)"
+            if [ -f FAIL ] && [ "$(tr -d '[:space:]' < FAIL)" = "$tail_pr" ]; then fail=true; fi
+          fi
+          echo "fast-fail deciding fail=$fail at $(date -u +%FT%T.%3NZ)"
+          if [ "$fail" = true ]; then exit 1; fi
+
+  slow:
+    name: slow
+    # Variants a and b. Variant c uses slow-gated, which waits for fast-fail.
+    if: ${{ vars.VARIANT != 'c' || github.event_name != 'merge_group' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - run: |
+          echo "slow started $(date -u +%FT%T.%3NZ)"
+          if [ "${{ github.event_name }}" = merge_group ]; then sleep 360; else sleep 5; fi
+          echo "slow ended $(date -u +%FT%T.%3NZ)"
+
+  slow-gated:
+    name: slow-gated
+    needs: [fast-fail]
+    # Variant c, merge groups only: the heavy leg starts only after the fast leg succeeded.
+    if: ${{ vars.VARIANT == 'c' && github.event_name == 'merge_group' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - run: |
+          echo "slow-gated started $(date -u +%FT%T.%3NZ)"
+          sleep 360
+          echo "slow-gated ended $(date -u +%FT%T.%3NZ)"
+
+  cancel-after-fast-fail:
+    name: cancel-after-fast-fail
+    needs: [fast-fail]
+    if: ${{ vars.VARIANT == 'b' && github.event_name == 'merge_group' && needs.fast-fail.result == 'failure' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          echo "cancel requested $(date -u +%FT%T.%3NZ)"
+          gh run cancel "$RUN_ID" --repo "$GITHUB_REPOSITORY"
+          echo "cancel returned $(date -u +%FT%T.%3NZ)"
+
+  cancel-after-slow:
+    name: cancel-after-slow
+    needs: [slow]
+    if: ${{ vars.VARIANT == 'b' && github.event_name == 'merge_group' && needs.slow.result == 'failure' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+        run: gh run cancel "$RUN_ID" --repo "$GITHUB_REPOSITORY"
+
+  gate:
+    name: CI Status Gate
+    needs: [fast-fail, slow, slow-gated]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Evaluate the legs
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          echo "gate started $(date -u +%FT%T.%3NZ)"
+          echo "$NEEDS" | jq -c 'map_values(.result)'
+          echo "$NEEDS" | jq -e 'all(.[]; .result == "success" or .result == "skipped")' >/dev/null \
+            || { echo "gate FAILING at $(date -u +%FT%T.%3NZ)"; exit 1; }
+          echo "gate passing at $(date -u +%FT%T.%3NZ)"

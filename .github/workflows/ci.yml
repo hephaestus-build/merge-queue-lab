@@ -105,6 +105,7 @@ jobs:
           NEEDS: ${{ toJSON(needs) }}
         run: |
           echo "gate started $(date -u +%FT%T.%3NZ)"
+          sleep "${{ vars.GATE_SLEEP || 0 }}"
           echo "$NEEDS" | jq -c 'map_values(.result)'
           echo "$NEEDS" | jq -e 'all(.[]; .result == "success" or .result == "skipped")' >/dev/null \
             || { echo "gate FAILING at $(date -u +%FT%T.%3NZ)"; exit 1; }

@@ -65,7 +65,7 @@ jobs:
   cancel-after-fast-fail:
     name: cancel-after-fast-fail
     needs: [fast-fail]
-    if: ${{ vars.VARIANT == 'b' && github.event_name == 'merge_group' && needs.fast-fail.result == 'failure' }}
+    if: ${{ always() && vars.VARIANT == 'b' && github.event_name == 'merge_group' && needs.fast-fail.result == 'failure' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -82,7 +82,7 @@ jobs:
   cancel-after-slow:
     name: cancel-after-slow
     needs: [slow]
-    if: ${{ vars.VARIANT == 'b' && github.event_name == 'merge_group' && needs.slow.result == 'failure' }}
+    if: ${{ always() && vars.VARIANT == 'b' && github.event_name == 'merge_group' && needs.slow.result == 'failure' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
